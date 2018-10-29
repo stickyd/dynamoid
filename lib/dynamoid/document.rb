@@ -147,6 +147,12 @@ module Dynamoid #:nodoc:
         model
       end
 
+      def expressive_update(hash_key, range_key_value = nil, options = {})
+        Dynamoid.adapter.expressive_update(table_name, hash_key, range_key: range_key_value) do |t|
+          yield t
+        end
+      end
+
       # Update document.
       # Uses efficient low-level `UpdateItem` API call.
       # Changes attibutes and loads new document version with one API call.

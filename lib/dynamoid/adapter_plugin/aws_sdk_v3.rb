@@ -435,6 +435,29 @@ module Dynamoid
         item ? result_item_to_hash(item) : nil
       end
 
+      # Updates an existing item using update expressions
+      #
+      # @param [String] table_name the name of the table
+      # @param [String] key the hash key of the item ot find
+      # @param [Hash] options provide a range key here if the table has a composite key
+      #
+      # @return [Hash] new attributes for the record
+      def expressive_update(table_name, key, options = {})
+        range_key = options.delete(:range_key)
+        table = describe_table(table_name)
+        yield(iu = ExpressiveItemUpdater.new(table, key, range_key))
+        raise "non-empty options: #{options}" unless options.empty?
+          result = client.update_item(iu.to_h.merge!({
+                                        table_name: table_name,
+                                        key: key_stanza(table, key, range_key),
+                                        return_values: 'ALL_NEW'}))
+          result_item_to_hash(result[:attributes])
+        rescue Aws::DynamoDB::Errors::ConditionalCheckFailedException => e
+          raise Dynamoid::Errors::ConditionalCheckFailedException, e
+        rescue Aws::DynamoDB::Errors::ValidationException => e
+          raise Dynamoid::Errors::RecordNotFound, e
+      end
+
       # Edits an existing item's attributes, or adds a new item to the table if it does not already exist. You can put, delete, or add attribute values
       #
       # @param [String] table_name the name of the table
@@ -1024,6 +1047,89 @@ module Dynamoid
         def item_count
           schema[:item_count]
         end
+      end
+
+      # Operates with the update_item's expression fields
+      class ExpressiveItemUpdater
+
+        # An individual expression within the update
+        class Expression
+
+          attr_reader :attribute, :value, :options
+
+          # @param [String] attribute the Attribute's name
+          # @param [String] value the value being set
+          # @param [Hash] options additional options (for conditionals, nesting) TODO Implement
+          def initialize(attribute, value, options = {})
+            @attribute = attribute
+            @value = value
+            @options = options
+          end
+
+        end
+
+        VALUE_NAMES = %w(a b c d e f g h i j k l m n o p q r s t u v w x y z)
+        attr_reader :table, :key, :range_key
+
+        def initialize(table, key, range_key = nil)
+          @table = table
+          @key = key
+          @range_key = range_key
+          @expressions = {
+              set: {},
+              add: {},
+              delete: [],
+              remove: [],
+          }
+        end
+
+        # TODO Implement
+
+        # def add(values, options = {})
+        #   @additions.merge!(sanitize_attributes(values))
+        # end
+        #
+        # def remove(values, options = {})
+        #   @additions.merge!(sanitize_attributes(values))
+        #   @expressions[:remove].merge!()
+        # end
+        #
+        # def delete(values, options = {})
+        #   @deletions.merge!(sanitize_attributes(values))
+        # end
+
+        def set(values, options = {})
+          sanitize_attributes(values).each do |k, v|
+            @expressions[:set][k] = Expression.new(k, v, options)
+          end
+        end
+
+        # @return [Hash] the values to be merged into the update_item request
+        def to_h
+          value_index = 0
+          values = {}
+          sets = @expressions[:set].map do |k, v|
+            value_name = ':' + VALUE_NAMES[value_index] # TODO Generate this from index for any amount
+            value_index += 1
+            values[value_name] = v.value
+            "#{k.to_s} = #{value_name}"
+          end
+          expressions = []
+          expressions << "SET #{sets.join(',')}" if sets.count > 0
+          {
+              update_expression: expressions.join(','),
+              expression_attribute_values: values,
+          }
+        end
+
+        private
+
+        def sanitize_attributes(attributes)
+          attributes.transform_values do |v|
+            v.is_a?(Hash) ? v.stringify_keys : v
+          end
+        end
+
       end
 
       #
